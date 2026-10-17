@@ -10,6 +10,7 @@ object MyArrow:
 def arrow[A, B]: MyArrow[A, B] = ???
 
 val test1 = arrows[Int].proc: a =>
+  println("Test")
   val arr1 = arrow[Int, Long]
   val arr2 = arrow[Int, Boolean]
   val arr3 = arrow[Long, String]

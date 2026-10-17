@@ -1,9 +1,9 @@
 package arrowSyntax
 
-import scala.annotation.{compileTimeOnly, tailrec}
-import scala.quoted.{Expr, Quotes, Type}
+import scala.annotation.compileTimeOnly
+import scala.quoted.Type
 
-import cats.arrow.{Arrow, ArrowChoice}
+import cats.arrow.Arrow
 
 @compileTimeOnly("ArrowSyntax was not removed by macro")
 trait ArrowSyntax[F[_, _], A] {
