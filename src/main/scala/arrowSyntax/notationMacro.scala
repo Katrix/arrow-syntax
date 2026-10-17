@@ -89,28 +89,38 @@ def procImpl[F[_, _]: {Type}, A: Type, B: Type](syntax: Expr[A => ArrowSyntax[F,
     case Match(on: Term, cases: Seq[MatchCase])
 
   enum CommandPhase:
-    case Prepare(prev: PatBinder, curr: Either[Command, Term])
+    case Prepare(prev: PatBinder, curr: Either[Command, Term], keep: Set[Symbol])
     case Execute(command: Command, targetType: TypeRepr)
 
   def tupleCompanion(n: Int): Term = Ref(defn.TupleClass(n).companionModule)
 
-  def tupleXXLCompanion: Term = Ref(Symbol.requiredModule("scala.runtime.TupleXXL"))
+  lazy val tupleXXLModule: Symbol = Symbol.requiredModule("scala.runtime.TupleXXL")
+  def tupleXXLCompanion: Term     = Ref(tupleXXLModule)
+
+  lazy val leftModule: Symbol    = Symbol.requiredModule("scala.util.Left")
+  lazy val rightModule: Symbol   = Symbol.requiredModule("scala.util.Right")
+  lazy val eitherTypeRepr: TypeRepr = TypeRepr.of[Either]
+
+  def eitherType(leaves: Seq[TypeRepr]): TypeRepr =
+    if leaves.isEmpty then report.errorAndAbort("Cannot build an Either tree with no leaves")
+
+    foldBalanced(leaves)(identity)((lTpe, rTpe) => eitherTypeRepr.appliedTo(List(lTpe, rTpe)))
 
   def eitherTree(leaves: Seq[TypeRepr]): (Seq[Term => Term], TypeRepr) =
     if leaves.isEmpty then report.errorAndAbort("Cannot build an Either tree with no leaves")
 
     foldBalanced(leaves)(tpe => (Seq(identity[Term]), tpe)):
       case ((lInjs, lTpe), (rInjs, rTpe)) =>
-        def wrap(module: String)(t: Term): Term =
+        def wrap(module: Symbol)(t: Term): Term =
           Select
-            .unique(Ref(Symbol.requiredModule(module)), "apply")
+            .unique(Ref(module), "apply")
             .appliedToTypes(List(lTpe, rTpe))
             .appliedTo(t)
 
         (
-          lInjs.map(_.andThen(wrap("scala.util.Left")))
-            ++ rInjs.map(_.andThen(wrap("scala.util.Right"))),
-          TypeRepr.of[Either].appliedTo(List(lTpe, rTpe))
+          lInjs.map(_.andThen(wrap(leftModule)))
+            ++ rInjs.map(_.andThen(wrap(rightModule))),
+          eitherTypeRepr.appliedTo(List(lTpe, rTpe))
         )
 
   class Storage(
@@ -123,11 +133,16 @@ def procImpl[F[_, _]: {Type}, A: Type, B: Type](syntax: Expr[A => ArrowSyntax[F,
 
     private def isXXL: Boolean = entries.length > 22
 
+    def isEmpty: Boolean = entries.isEmpty
+
+    def entrySymbols: Seq[Symbol] = entries.map(_.sym)
+
     def makeSymbols(owner: Symbol): Symbols =
       entries.map(t => Symbol.newBind(owner, Symbol.freshName(t.sym.name), Flags.EmptyFlags, t.tpe))
 
     def makeUnapply(symbols: Symbols): Tree =
       if entries.isEmpty then Wildcard()
+      else if entries.length == 1 then Bind(symbols.head, Wildcard())
       else if isXXL then
         // TupleXXL elements are untyped, so we need a type test to give the binds their types
         val unchecked = '{ new scala.unchecked() }.asTerm
@@ -151,6 +166,7 @@ def procImpl[F[_, _]: {Type}, A: Type, B: Type](syntax: Expr[A => ArrowSyntax[F,
 
     def makeTupleTerm(symbols: Symbols): Term =
       if entries.isEmpty then Literal(UnitConstant())
+      else if entries.length == 1 then Ref(symbols.head)
       else if isXXL then '{ scala.runtime.TupleXXL(${ Varargs(symbols.map(s => Ref(s).asExpr)) }*) }.asTerm
       else
         TypeApply(
@@ -160,8 +176,27 @@ def procImpl[F[_, _]: {Type}, A: Type, B: Type](syntax: Expr[A => ArrowSyntax[F,
 
     def makeType: TypeRepr =
       if entries.isEmpty then TypeRepr.of[Unit]
+      else if entries.length == 1 then entries.head.tpe
       else if isXXL then TypeRepr.of[scala.runtime.TupleXXL]
       else defn.TupleClass(entries.length).typeRef.appliedTo(entries.map(_.tpe).toList)
+
+    def makePairType(tpe: TypeRepr): TypeRepr =
+      if entries.isEmpty then tpe else TypeRepr.of[Tuple2].appliedTo(List(tpe, makeType))
+
+    def makePairUnapply(pat: Tree, tpe: TypeRepr, symbols: Symbols): Tree =
+      if entries.isEmpty then pat
+      else
+        Unapply(
+          TypeApply(Select.unique(tupleCompanion(2), "unapply"), List(Inferred(tpe), Inferred(makeType))),
+          Nil,
+          List(pat, makeUnapply(symbols))
+        )
+
+    def makePairTerm(term: Term, tpe: TypeRepr, symbols: Symbols): Term =
+      if entries.isEmpty then term
+      else
+        TypeApply(Select.unique(tupleCompanion(2), "apply"), List(Inferred(tpe), Inferred(makeType)))
+          .appliedTo(term, makeTupleTerm(symbols))
 
     def remap[T <: Tree](tree: T, newSymbols: Symbols, ownerSymbol: Symbol): T =
       val mapping = entries.map(_.sym).zip(newSymbols).toMap
@@ -184,7 +219,17 @@ def procImpl[F[_, _]: {Type}, A: Type, B: Type](syntax: Expr[A => ArrowSyntax[F,
     def addStorage(storage: Storage): Storage.CombinedStorage[this.type, storage.type] =
       new Storage.CombinedStorage(this, storage)
 
+    def filter(keep: Symbol => Boolean): Storage.FilteredStorage[this.type] =
+      new Storage.FilteredStorage(this, keep)
+
   object Storage:
+    class FilteredStorage[P <: Storage & scala.Singleton](val parent: P, keep: Symbol => Boolean)
+        extends Storage(parent.entries.filter(t => keep(t.sym))):
+      def filterSymbols(parentSymbols: parent.Symbols): Symbols =
+        wrapSymbols(
+          parent.entries.zip(parent.unwrapSymbols(parentSymbols)).collect { case (t, s) if keep(t.sym) => s }
+        )
+
     class CombinedStorage[L <: Storage & scala.Singleton, R <: Storage & scala.Singleton](
         val left: L,
         val right: R
@@ -204,6 +249,10 @@ def procImpl[F[_, _]: {Type}, A: Type, B: Type](syntax: Expr[A => ArrowSyntax[F,
   val (argBinder, lambdaBody) = unwrapInlined(syntax.asTerm) match
     case Binder(binder, term) => (binder, term)
     case _                    => report.errorAndAbort("Did not receive lambda as an argument, or got invalid lambda")
+
+  val lambdaOwner = unwrapInlined(syntax.asTerm) match
+    case Lambda(List(param), _) => param.symbol.owner
+    case _                      => report.errorAndAbort("Did not receive lambda as an argument, or got invalid lambda")
 
   // TODO: Veify that argBinder symbols are not used in preample
   val (preample, forBody) = lambdaBody match
@@ -253,29 +302,46 @@ def procImpl[F[_, _]: {Type}, A: Type, B: Type](syntax: Expr[A => ArrowSyntax[F,
     case _ => report.errorAndAbort("Expected for comprehension", term.pos)
   end collectCommands
 
+  def referencedSymbols(tree: Tree): Set[Symbol] =
+    new TreeAccumulator[Set[Symbol]]:
+      def foldTree(acc: Set[Symbol], tree: Tree)(owner: Symbol): Set[Symbol] = tree match
+        case Ident(_) => acc + tree.symbol
+        case _        => foldOverTree(acc, tree)(owner)
+    .foldTree(Set.empty, tree)(Symbol.spliceOwner)
+
+  def commandUses(cmd: Command): Set[Symbol] = cmd match
+    case cmd: Command.InvokeArrow[_, _] => referencedSymbols(cmd.input.asTerm)
+    case Command.If(cond, left, right)  => referencedSymbols(cond.asTerm) ++ commandUses(left) ++ commandUses(right)
+    case Command.Match(on, cases)       =>
+      cases.foldLeft(referencedSymbols(on)): (acc, cse) =>
+        acc ++ referencedSymbols(cse.value) ++ cse.guard.fold(Set.empty)(referencedSymbols) ++ commandUses(cse.thenDo)
+
   val (lastMap, commands) = collectCommands(forBody, Nil)
   val commandPhases       =
-    val first   = commands.head
-    val last    = commands.last
-    val sliding = commands.sliding(2).flatMap {
-      case List(prev, curr) =>
-        Seq(CommandPhase.Prepare(prev.binder, Left(curr.command)), CommandPhase.Execute(curr.command, curr.binder.tpe))
-      case _ => report.errorAndAbort("List.sliding is misbehaving")
-    }
+    val usedFrom = commands.map(c => commandUses(c.command)).scanRight(referencedSymbols(lastMap))(_ ++ _)
+    val binders  = argBinder :: commands.map(_.binder)
 
-    Seq(CommandPhase.Execute(first.command, first.binder.tpe)) ++ sliding ++ Seq(
-      CommandPhase.Prepare(last.binder, Right(lastMap))
-    )
+    commands
+      .lazyZip(binders)
+      .lazyZip(usedFrom.tail)
+      .flatMap: (curr, prevBinder, keep) =>
+        Seq(
+          CommandPhase.Prepare(prevBinder, Left(curr.command), keep),
+          CommandPhase.Execute(curr.command, curr.binder.tpe)
+        )
+      .appended(CommandPhase.Prepare(commands.last.binder, Right(lastMap), Set.empty))
   end commandPhases
+
+  lazy val arrowChoiceTyCl: Option[Expr[ArrowChoice[F]]] = Expr.summon[ArrowChoice[F]]
 
   import arrowSyntax.inlineSyntax.*
 
   case class CommandExecuteRes[From, To](arrow: Expr[F[From, To]], fromType: Type[From], toType: Type[To])
 
   def commandToTerm(
-      acc: (res: Term, storage: Storage),
+      acc: (res: Option[Term], storage: Storage),
       cmdPhase: CommandPhase
-  ): (res: Term, storage: Storage) = cmdPhase match
+  ): (res: Option[Term], storage: Storage) = cmdPhase match
     case CommandPhase.Execute(cmd, targetType) =>
       targetType.asType match
         case '[target] =>
@@ -307,13 +373,12 @@ def procImpl[F[_, _]: {Type}, A: Type, B: Type](syntax: Expr[A => ArrowSyntax[F,
                   given Type[leftFrom]  = leftRes.fromType
                   given Type[rightFrom] = rightRes.fromType
 
-                  val arrowChoiceTyCl = Expr
-                    .summon[ArrowChoice[F]]
+                  val arrowChoice = arrowChoiceTyCl
                     .getOrElse(report.errorAndAbort(s"ArrowChoice[${Type.show[F]}] not found", cond.asTerm.pos))
 
                   CommandExecuteRes(
                     '{
-                      $arrowChoiceTyCl
+                      $arrowChoice
                         .choice[leftFrom, rightFrom, target](${ leftRes.arrow }, ${ rightRes.arrow })
                     },
                     Type.of[Either[leftFrom, rightFrom]],
@@ -323,8 +388,7 @@ def procImpl[F[_, _]: {Type}, A: Type, B: Type](syntax: Expr[A => ArrowSyntax[F,
             case Command.Match(on, cases) =>
               val reses = cases.map(cse => handleCommand(cse.thenDo))
 
-              val arrowChoiceTyCl = Expr
-                .summon[ArrowChoice[F]]
+              val arrowChoice = arrowChoiceTyCl
                 .getOrElse(report.errorAndAbort(s"ArrowChoice[${Type.show[F]}] not found", on.pos))
 
               foldBalanced(reses)(identity):
@@ -337,7 +401,7 @@ def procImpl[F[_, _]: {Type}, A: Type, B: Type](syntax: Expr[A => ArrowSyntax[F,
 
                   CommandExecuteRes(
                     '{
-                      $arrowChoiceTyCl
+                      $arrowChoice
                         .choice[leftFrom, rightFrom, target](${ leftRes.arrow }, ${ rightRes.arrow })
                     },
                     Type.of[Either[leftFrom, rightFrom]],
@@ -348,20 +412,32 @@ def procImpl[F[_, _]: {Type}, A: Type, B: Type](syntax: Expr[A => ArrowSyntax[F,
           (handleCommand(cmd), acc.storage.makeType.asType) match
             case (res: CommandExecuteRes[from, `target`], '[storageTupleType]) =>
               given Type[from] = res.fromType
-              (
-                '{
-                  ${ acc.res.asExprOf[F[A, (from, storageTupleType)]] }.andThen(
-                    $arrowTyCl.first[from, target, storageTupleType](${ res.arrow })
-                  )(using $arrowTyCl)
-                }.asTerm,
-                acc.storage
-              )
+
+              val arrow =
+                if acc.storage.isEmpty then res.arrow.asTerm
+                else '{ $arrowTyCl.first[from, target, storageTupleType](${ res.arrow }) }.asTerm
+
+              val newRes = acc.res match
+                case Some(prevRes) =>
+                  (
+                    acc.storage.makePairType(TypeRepr.of[from]).asType,
+                    acc.storage.makePairType(TypeRepr.of[target]).asType
+                  ) match
+                    case ('[in], '[out]) =>
+                      '{
+                        ${ prevRes.asExprOf[F[A, in]] }.andThen(${ arrow.asExprOf[F[in, out]] })(using $arrowTyCl)
+                      }.asTerm
+                    case (_, _) => abortOnTypeMatchFailure
+                case None => arrow
+
+              (Some(newRes), acc.storage)
             case (_: CommandExecuteRes[from, `target`], _) => abortOnTypeMatchFailure
 
-    case CommandPhase.Prepare(prev, curr) =>
+    case CommandPhase.Prepare(prev, curr, keep) =>
       val oldStorage        = acc.storage
       val prevBinderStorage = Storage.fromPat(prev)
-      val newStorage        = oldStorage.addStorage(prevBinderStorage)
+      val combinedStorage   = oldStorage.addStorage(prevBinderStorage)
+      val newStorage        = combinedStorage.filter(keep.contains)
 
       def makeFromType(cmd: Command): Type[?] = cmd match
         case cmd: Command.InvokeArrow[from, _] => cmd.fromType
@@ -375,161 +451,135 @@ def procImpl[F[_, _]: {Type}, A: Type, B: Type](syntax: Expr[A => ArrowSyntax[F,
               case '[t] => TypeRepr.of[t]
               case _    => abortOnTypeMatchFailure
 
-          eitherTree(leafTypes)._2.asType
+          eitherType(leafTypes).asType
 
       val fromTypeWithCmd = curr.left.map(c => (c, makeFromType(c)))
-      val fromType        = fromTypeWithCmd.left.map(_._2)
 
-      (prev.tpe.asType, oldStorage.makeType.asType, newStorage.makeType.asType) match
-        case ('[mid2], '[storageTupleType], '[storageTupleResultType]) =>
-          val lam = Lambda(
-            Symbol.spliceOwner,
-            MethodType(List("t"))(
-              _ => List(TypeRepr.of[(mid2, storageTupleType)]),
-              _ =>
-                fromType match
-                  case Left('[from]) => TypeRepr.of[(from, storageTupleResultType)]
-                  case Right(_)      => TypeRepr.of[B]
-                  case Left(_)       => abortOnTypeMatchFailure
-            ),
-            {
-              case (sym, List(tuple: Term)) =>
-                given Quotes = sym.asQuotes
+      val isIdentity = prev.pat match
+        case b @ Bind(_, Wildcard()) =>
+          def isBinder(t: Term): Boolean = unwrapInlined(t) match
+            case i @ Ident(_) => i.symbol == b.symbol
+            case _            => false
 
-                val prevBinderSymbols = prevBinderStorage.makeSymbols(sym)
-                val oldSymbols        = oldStorage.makeSymbols(sym)
-                val newSymbols        = newStorage.addSymbols(oldSymbols, prevBinderSymbols)
+          oldStorage.entrySymbols == newStorage.entrySymbols && (fromTypeWithCmd match
+            case Left((cmd: Command.InvokeArrow[from, _], '[from2])) =>
+              isBinder(cmd.input.asTerm) && prev.tpe =:= TypeRepr.of[from2]
+            case Right(map) => isBinder(map) && prev.tpe =:= TypeRepr.of[B]
+            case _          => false)
+        case _ => false
 
-                def cmdToInput(cmd: Command, cmdStorage: Storage, cmdSymbols: cmdStorage.Symbols): (Term, TypeRepr) =
-                  cmd match
-                    case cmd: Command.InvokeArrow[from2, _] =>
-                      (cmdStorage.remap(cmd.input.asTerm, cmdSymbols, sym), TypeRepr.of(using cmd.fromType))
-                    case Command.If(cond, left, right) =>
-                      val (leftInput, leftType)   = cmdToInput(left, cmdStorage, cmdSymbols)
-                      val (rightInput, rightType) = cmdToInput(right, cmdStorage, cmdSymbols)
-                      val remappedCond            = cmdStorage.remap(cond.asTerm, cmdSymbols, sym).asExprOf[Boolean]
+      if isIdentity then (acc.res, newStorage)
+      else
+        val inType  = oldStorage.makePairType(prev.tpe)
+        val outType = fromTypeWithCmd match
+          case Left((_, '[from])) => newStorage.makePairType(TypeRepr.of[from])
+          case Right(_)           => TypeRepr.of[B]
+          case Left(_)            => abortOnTypeMatchFailure
 
-                      (leftType.asType, rightType.asType) match
-                        case ('[left], '[right]) =>
-                          (
-                            '{
-                              if $remappedCond then Left(${ leftInput.asExprOf[left] })
-                              else Right(${ rightInput.asExprOf[right] })
-                            }.asTerm,
-                            TypeRepr.of[Either[left, right]]
-                          )
-                        case (_, _) => abortOnTypeMatchFailure
+        val lam = Lambda(
+          Symbol.spliceOwner,
+          MethodType(List("t"))(_ => List(inType), _ => outType),
+          {
+            case (sym, List(tuple: Term)) =>
+              given Quotes = sym.asQuotes
 
-                    case Command.Match(on, cases) =>
-                      val caseDefParts = cases.map: cse =>
-                        val caseStorage   = Storage.fromPat(PatBinder(cse.value, on.tpe))
-                        val caseSymbols   = caseStorage.makeSymbols(sym)
-                        val newCmdStorage = cmdStorage.addStorage(caseStorage)
-                        val newCmdSymbols = newCmdStorage.addSymbols(cmdSymbols, caseSymbols)
+              val prevBinderSymbols = prevBinderStorage.makeSymbols(sym)
+              val oldSymbols        = oldStorage.makeSymbols(sym)
+              val combinedSymbols   = combinedStorage.addSymbols(oldSymbols, prevBinderSymbols)
+              val newSymbols        = newStorage.filterSymbols(combinedSymbols)
 
-                        val pat              = newCmdStorage.remap(cse.value, newCmdSymbols, sym)
-                        val guard            = cse.guard.map(g => newCmdStorage.remap(g, newCmdSymbols, sym))
-                        val (body, bodyType) = cmdToInput(cse.thenDo, newCmdStorage, newCmdSymbols)
+              def cmdToInput(cmd: Command, cmdStorage: Storage, cmdSymbols: cmdStorage.Symbols): (Term, TypeRepr) =
+                cmd match
+                  case cmd: Command.InvokeArrow[from2, _] =>
+                    (cmdStorage.remap(cmd.input.asTerm, cmdSymbols, sym), TypeRepr.of(using cmd.fromType))
+                  case Command.If(cond, left, right) =>
+                    val (leftInput, leftType)   = cmdToInput(left, cmdStorage, cmdSymbols)
+                    val (rightInput, rightType) = cmdToInput(right, cmdStorage, cmdSymbols)
+                    val remappedCond            = cmdStorage.remap(cond.asTerm, cmdSymbols, sym).asExprOf[Boolean]
 
-                        (pat, guard, body, bodyType)
-
-                      val (injections, eitherType) = eitherTree(caseDefParts.map(_._4))
-
-                      val caseDefs = caseDefParts
-                        .zip(injections)
-                        .map:
-                          case ((pat, guard, body, _), injection) => CaseDef(pat, guard, injection(body))
-
-                      (
-                        Match(
-                          cmdStorage.remap(on, cmdSymbols, sym),
-                          caseDefs.toList
-                        ),
-                        eitherType
-                      )
-                end cmdToInput
-
-                Match(
-                  tuple,
-                  List(
-                    CaseDef(
-                      Unapply(
-                        TypeApply(
-                          Select.unique(tupleCompanion(2), "unapply"),
-                          List(Inferred(TypeRepr.of[mid2]), Inferred(TypeRepr.of[storageTupleType]))
-                        ),
-                        Nil,
-                        List(
-                          prevBinderStorage.remap(prev.pat, prevBinderSymbols, sym),
-                          oldStorage.makeUnapply(oldSymbols)
+                    (leftType.asType, rightType.asType) match
+                      case ('[left], '[right]) =>
+                        (
+                          '{
+                            if $remappedCond then Left(${ leftInput.asExprOf[left] })
+                            else Right(${ rightInput.asExprOf[right] })
+                          }.asTerm,
+                          TypeRepr.of[Either[left, right]]
                         )
+                      case (_, _) => abortOnTypeMatchFailure
+
+                  case Command.Match(on, cases) =>
+                    val caseDefParts = cases.map: cse =>
+                      val caseStorage   = Storage.fromPat(PatBinder(cse.value, on.tpe))
+                      val caseSymbols   = caseStorage.makeSymbols(sym)
+                      val newCmdStorage = cmdStorage.addStorage(caseStorage)
+                      val newCmdSymbols = newCmdStorage.addSymbols(cmdSymbols, caseSymbols)
+
+                      val pat              = newCmdStorage.remap(cse.value, newCmdSymbols, sym)
+                      val guard            = cse.guard.map(g => newCmdStorage.remap(g, newCmdSymbols, sym))
+                      val (body, bodyType) = cmdToInput(cse.thenDo, newCmdStorage, newCmdSymbols)
+
+                      (pat, guard, body, bodyType)
+
+                    val (injections, eitherType) = eitherTree(caseDefParts.map(_._4))
+
+                    val caseDefs = caseDefParts
+                      .zip(injections)
+                      .map:
+                        case ((pat, guard, body, _), injection) => CaseDef(pat, guard, injection(body))
+
+                    (
+                      Match(
+                        cmdStorage.remap(on, cmdSymbols, sym),
+                        caseDefs.toList
                       ),
-                      None,
-                      fromTypeWithCmd match
-                        case Left((cmd, '[from])) =>
-                          TypeApply(
-                            Select.unique(tupleCompanion(2), "apply"),
-                            List(Inferred(TypeRepr.of[from]), Inferred(TypeRepr.of[storageTupleResultType]))
-                          ).appliedTo(cmdToInput(cmd, newStorage, newSymbols)._1, newStorage.makeTupleTerm(newSymbols))
-                        case Right(map) =>
-                          newStorage.remap(map, newSymbols, sym)
-                        case Left(_) => abortOnTypeMatchFailure
+                      eitherType
                     )
+              end cmdToInput
+
+              Match(
+                tuple,
+                List(
+                  CaseDef(
+                    oldStorage.makePairUnapply(
+                      prevBinderStorage.remap(prev.pat, prevBinderSymbols, sym),
+                      prev.tpe,
+                      oldSymbols
+                    ),
+                    None,
+                    fromTypeWithCmd match
+                      case Left((cmd, '[from])) =>
+                        newStorage.makePairTerm(
+                          cmdToInput(cmd, combinedStorage, combinedSymbols)._1,
+                          TypeRepr.of[from],
+                          newSymbols
+                        )
+                      case Right(map) =>
+                        combinedStorage.remap(map, combinedSymbols, sym)
+                      case Left(_) => abortOnTypeMatchFailure
                   )
                 )
-              case _ => report.errorAndAbort("Lambda tree was not term")
-            }
-          )
-
-          val prevRes = acc.res.asExprOf[F[A, (mid2, storageTupleType)]]
-          val res     = fromType match
-            case Left('[from]) =>
-              '{
-                $prevRes.rmap[(from, storageTupleResultType)](${
-                  lam.asExprOf[((mid2, storageTupleType)) => (from, storageTupleResultType)]
-                })(using $arrowTyCl)
-              }
-            case Right(_) =>
-              '{ $prevRes.rmap[B](${ lam.asExprOf[((mid2, storageTupleType)) => B] })(using $arrowTyCl) }
-            case Left(_) => abortOnTypeMatchFailure
-
-          (res.asTerm, newStorage)
-        case (_, _, _) => abortOnTypeMatchFailure
-
-  val freshStorage = new Storage(Nil)
-  val startingTerm = freshStorage.makeType.asType match
-    case '[storageTupleType] =>
-      val lam = Lambda(
-        Symbol.spliceOwner,
-        MethodType(List("a"))(_ => List(TypeRepr.of[A]), _ => TypeRepr.of[(A, storageTupleType)]),
-        {
-          case (sym, List(term: Term)) =>
-            given Quotes = sym.asQuotes
-
-            val symbols = freshStorage.makeSymbols(sym)
-
-            '{
-              (
-                ${ term.asExprOf[A] },
-                ${ freshStorage.makeTupleTerm(symbols).asExprOf[storageTupleType] }
               )
-            }.asTerm
+            case _ => report.errorAndAbort("Lambda tree was not term")
+          }
+        )
 
-          case _ => report.errorAndAbort("Lambda tree was not term")
-        }
-      )
-      
-      '{ $arrowTyCl.lift(${lam.asExprOf[A => (A, storageTupleType)]}) }.asTerm
+        val res = (inType.asType, outType.asType) match
+          case ('[in], '[out]) =>
+            val f = lam.asExprOf[in => out]
+            acc.res match
+              case Some(prevRes) => '{ ${ prevRes.asExprOf[F[A, in]] }.rmap[out]($f)(using $arrowTyCl) }
+              case None => '{ $arrowTyCl.lift[in, out]($f) }
+          case (_, _) => abortOnTypeMatchFailure
 
-  val firstPrepare = commandToTerm((startingTerm, freshStorage), CommandPhase.Prepare(argBinder, Left(commands.head.command)))
+        (Some(res.asTerm), newStorage)
 
-  val (arrowTerm, storage) =
-    commandPhases.tail.foldLeft(commandToTerm(firstPrepare, commandPhases.head))(commandToTerm)
+  val (arrowTermOpt, storage) = commandPhases.foldLeft((None: Option[Term], new Storage(Nil)))(commandToTerm)
+  val arrowTerm               = arrowTermOpt.getOrElse(report.errorAndAbort("Proc did not produce an arrow"))
 
-  val res = preample.headOption.map(_.symbol.owner) match
-    case Some(lambdaOwner) =>
-      Block(preample, arrowTerm.changeOwner(lambdaOwner)).changeOwner(Symbol.spliceOwner).asExprOf[F[A, B]]
-    case None => arrowTerm.asExprOf[F[A, B]]
+  val res =
+    if preample.isEmpty then arrowTerm.asExprOf[F[A, B]]
+    else Block(preample, arrowTerm.changeOwner(lambdaOwner)).changeOwner(Symbol.spliceOwner).asExprOf[F[A, B]]
 
   println(res.asTerm.show(using Printer.TreeShortCode))
 
