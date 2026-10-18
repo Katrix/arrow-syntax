@@ -21,13 +21,13 @@ extension [F[_, _]: Arrow, A, B](arr: F[A, B])
   @compileTimeOnly("-<< was not removed by macro")
   def -<<(a: A): ArrowSyntax[F, B] = sys.error("-<< was not removed by macro")
 
-class Syntax[A](private val b: Boolean) extends AnyVal:
-  inline def proc[F[_, _]: {Arrow as arrow}, B](inline syntax: A => ArrowSyntax[F, B]): F[A, B] =
-    ${ procImpl[F, A, B]('{ syntax }, '{ arrow }) }
 
 // TODO: recursive
 
 object arrows:
   inline def lift[F[_, _]](using arrow: Arrow[F])[A, B](f: A => B): F[A, B] = arrow.lift(f)
 
-  inline def apply[A]: Syntax[A] = new Syntax[A](false)
+  inline def id[F[_, _]](using arrow: Arrow[F])[A]: F[A, A] = arrow.id
+
+  inline def proc[A](using DummyImplicit)[F[_, _] : {Arrow as arrow}, B](inline syntax: A => ArrowSyntax[F, B]): F[A, B] =
+    ${ procImpl[F, A, B]('{ syntax }, '{ arrow }) }

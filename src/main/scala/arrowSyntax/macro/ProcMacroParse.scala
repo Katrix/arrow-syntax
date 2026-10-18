@@ -16,22 +16,62 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
       case Lambda(List(valDef @ ValDef(_, typeTree, None)), Match(term, List(CaseDef(pat, None, next))))
           if valDef.symbol == term.symbol =>
         Some((PatBinder(pat, typeTree.tpe), next, valDef.symbol.owner))
+      case UntupledLambda(valDef, params, body) =>
+        val bindSyms = params.map(p => Symbol.newBind(Symbol.spliceOwner, p.name, Flags.EmptyFlags, p.tpt.tpe))
+        val pat      = Unapply(
+          TypeApply(
+            Select.unique(Ref(defn.TupleClass(params.length).companionModule), "unapply"),
+            params.map(p => Inferred(p.tpt.tpe))
+          ),
+          Nil,
+          bindSyms.map(s => Bind(s, Wildcard()))
+        )
+
+        Some(
+          (
+            PatBinder(pat, valDef.tpt.tpe),
+            replaceRefs(body, params.map(_.symbol).zip(bindSyms).toMap, valDef.symbol.owner),
+            valDef.symbol.owner
+          )
+        )
       case Lambda(List(valDef @ ValDef(name, typeTree, None)), next) =>
         // Bind requires a symbol with the Case flag, so we can't reuse the parameter symbol directly
         val bindSym = Symbol.newBind(Symbol.spliceOwner, name, Flags.EmptyFlags, typeTree.tpe)
-        val mapper  = new TreeMap:
-          override def transformTerm(tree: Term)(owner: Symbol): Term = tree match
-            case Ident(_) if tree.symbol == valDef.symbol => Ref(bindSym)
-            case _                                        => super.transformTerm(tree)(owner)
 
         Some(
           (
             PatBinder(Bind(bindSym, Wildcard()), typeTree.tpe),
-            mapper.transformTerm(next)(valDef.symbol.owner),
+            replaceRefs(next, Map(valDef.symbol -> bindSym), valDef.symbol.owner),
             valDef.symbol.owner
           )
         )
       case _ => None
+
+    private def replaceRefs(term: Term, mapping: Map[Symbol, Symbol], owner: Symbol): Term =
+      new TreeMap:
+        override def transformTerm(tree: Term)(owner: Symbol): Term = tree match
+          case Ident(_) if mapping.contains(tree.symbol) => Ref(mapping(tree.symbol))
+          case _                                         => super.transformTerm(tree)(owner)
+      .transformTerm(term)(owner)
+
+    private object UntupledLambda:
+      def unapply(lam: Term): Option[(ValDef, List[ValDef], Term)] = lam match
+        case Lambda(List(valDef @ ValDef(_, typeTree, None)), Block(stats, expr)) =>
+          val tpe   = typeTree.tpe.dealias
+          val arity = tpe.typeArgs.length
+
+          def isSelector(rhs: Term, i: Int): Boolean = unwrapInlined(rhs) match
+            case Select(id @ Ident(_), sel) => id.symbol == valDef.symbol && sel == s"_${i + 1}"
+            case _                          => false
+
+          val (candidates, rest) = stats.splitAt(arity)
+          val params             = candidates.zipWithIndex.collect:
+            case (param @ ValDef(_, _, Some(rhs)), i) if isSelector(rhs, i) => param
+
+          if arity >= 2 && defn.isTupleClass(tpe.typeSymbol) && params.length == arity then
+            Some((valDef, params, if rest.isEmpty then expr else Block(rest, expr)))
+          else None
+        case _ => None
 
     def collectSymbolsAndTypes(pat: PatBinder): List[(Symbol, TypeRepr)] =
       new TreeAccumulator[List[(Symbol, TypeRepr)]]:

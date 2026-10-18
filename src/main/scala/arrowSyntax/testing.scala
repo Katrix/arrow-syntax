@@ -9,7 +9,7 @@ object MyArrow:
 
 def arrow[A, B]: MyArrow[A, B] = ???
 
-val test1 = arrows[Int].proc: a =>
+val test1 = arrows.proc[Int]: a =>
   println("Test")
   val arr1 = arrow[Int, Long]
   val arr2 = arrow[Int, Boolean]
@@ -30,7 +30,7 @@ val test1 = arrows[Int].proc: a =>
   yield (r1, r2)
 
 /*
-val result1Step1 = arrows[Int].proc: a =>
+val result1Step1 = arrows.proc[Int]: a =>
   val arr1 = arrow[Int, Long]
   val arr2 = arrow[Int, Boolean]
   val arr3 = arrow[Long, String]
