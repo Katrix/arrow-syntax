@@ -279,6 +279,63 @@ object ProcSuite extends FunSuite:
 
     expect(errors.exists(_.message.contains("ArrowChoice")))
 
+  test("arrows can use preamble definitions"):
+    val f = arrows.proc[Int]: a =>
+      val offset                = 100
+      val addOffset: Int => Int = _ + offset
+
+      for b <- addOffset -< a yield b
+
+    expect.eql(105, f(5))
+
+  test("an arrow using an earlier binder is a compile error"):
+    val errors = typeCheckErrors("""
+      arrows.proc[Int]: a =>
+        for
+          b <- inc -< a
+          c <- ((x: Int) => x + b) -< a
+        yield c
+    """)
+
+    expect(errors.exists(_.message.contains("cannot depend on `b`")))
+
+  test("an arrow using the proc input is a compile error"):
+    val errors = typeCheckErrors("""
+      arrows.proc[Int]: a =>
+        for b <- ((x: Int) => x + a) -< a yield b
+    """)
+
+    expect(errors.exists(_.message.contains("cannot depend on `a`")))
+
+  test("an arrow using an untupled proc input is a compile error"):
+    val errors = typeCheckErrors("""
+      arrows.proc[(Int, Int)]: (x, y) =>
+        for b <- ((z: Int) => z + y) -< x yield b
+    """)
+
+    expect(errors.exists(_.message.contains("cannot depend on `y`")))
+
+  test("an arrow using a match case binder is a compile error"):
+    val errors = typeCheckErrors("""
+      arrows.proc[Option[Int]]: o =>
+        for
+          r <- o match
+            case Some(n) => ((x: Int) => x + n) -< n
+            case None    => inc -< 0
+        yield r
+    """)
+
+    expect(errors.exists(_.message.contains("cannot depend on `n`")))
+
+  test("a preamble using the proc input is a compile error"):
+    val errors = typeCheckErrors("""
+      arrows.proc[Int]: a =>
+        val offset = a + 1
+        for b <- inc -< offset yield b
+    """)
+
+    expect(errors.exists(_.message.contains("cannot depend on the proc input `a`")))
+
   test("a body that is a single command is the same as a for comprehension yielding it"):
     val f = arrows.proc[Int]: a =>
       double -< a

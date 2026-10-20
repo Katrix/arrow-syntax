@@ -113,7 +113,7 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
         Type.of[b],
         arrow.asTerm
           .changeOwner(Symbol.spliceOwner)
-          .asExprOf[F[a, b]], // TODO: Verify that the arrow can be lifted out of the current context
+          .asExprOf[F[a, b]],
         value
       )
 
