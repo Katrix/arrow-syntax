@@ -46,20 +46,38 @@ sealed trait RecScope[F[_, _]]
   * }}}
   *
   * The vals are evaluated in order. A reference to a val defined at or after
-  * the current one is fed back using [[ArrowLoop.loop]], and is only valid
-  * once the whole block has been evaluated. Forcing it before then, for
-  * example by passing it directly to a strict arrow, will not terminate. Such
-  * references should only be used lazily, like inside a lambda or a by-name
-  * argument, or with an arrow whose `loop` delays the fed back value.
+  * the current one is fed back using [[ArrowLoop.loop]], and is only valid once
+  * the whole block has been evaluated. Forcing it before then, for example by
+  * passing it directly to a strict arrow, will not terminate. Such references
+  * should only be used lazily, like inside a lambda or a by-name argument, or
+  * with an arrow whose `loop` delays the fed back value.
   */
 @compileTimeOnly("rec was not removed by macro")
 def rec[F[_, _], A](body: RecScope[F] ?=> A)(using ArrowLoop[F]): ArrowSyntax[F, A] =
   sys.error("rec was not removed by macro")
 
 object arrows:
+  /**
+    * Lift a function into an arrow. The arrow type and the function types are
+    * declared separately, so you don't have to specify as much.
+    */
   inline def lift[F[_, _]](using arrow: Arrow[F])[A, B](f: A => B): F[A, B] = arrow.lift(f)
 
+  /**
+    * Create an identity arrow. The arrow type and the function types are *
+    * declared separately, so you don't have to specify as much.
+    */
   inline def id[F[_, _]](using arrow: Arrow[F])[A]: F[A, A] = arrow.id
 
-  inline def proc[A](using DummyImplicit)[F[_, _] : {Arrow as arrow}, B](inline syntax: A => ArrowSyntax[F, B]): F[A, B] =
+  /**
+    * Creates an arrow notation scope. Specify the input type of the resulting
+    * arrow in the proc call.
+    *
+    * The body of proc should be a for comprehension, using [[-<]] and [[-<<]]
+    * to apply values to arrows. Application of values to arrows can also happen
+    * within if then else, and match clauses.
+    */
+  inline def proc[A](using DummyImplicit)[F[_, _]: {Arrow as arrow}, B](
+      inline syntax: A => ArrowSyntax[F, B]
+  ): F[A, B] =
     ${ procImpl[F, A, B]('{ syntax }, '{ arrow }) }

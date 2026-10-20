@@ -3,6 +3,7 @@ package arrowSyntax
 import cats.Eval
 import cats.arrow.Arrow
 
+/** Typeclass allowing for creation of recursive arrows. Used for `rec` in arrow notation. */
 trait ArrowLoop[F[_, _]] extends Arrow[F]:
   /**
     * Feeds the second output of `f` back in as its second input. The fed back
@@ -13,8 +14,8 @@ trait ArrowLoop[F[_, _]] extends Arrow[F]:
 
 object ArrowLoop:
   given ArrowLoop[Function1]:
-    def lift[A, B](f: A => B): A => B                   = f
-    def compose[A, B, C](f: B => C, g: A => B): A => C  = g.andThen(f)
+    def lift[A, B](f: A => B): A => B                  = f
+    def compose[A, B, C](f: B => C, g: A => B): A => C = g.andThen(f)
     def first[A, B, C](fa: A => B): ((A, C)) => (B, C) = (a, c) => (fa(a), c)
 
     extension [A, B, C](f: ((A, Eval[C])) => (B, C))
