@@ -50,7 +50,7 @@ trait ProcMacroStorage[F[_, _], A, B]:
         )
       case TupleShape.XXL =>
         // TupleXXL elements are untyped, so we need a type test to give the binds their types
-        val unchecked = '{ new scala.unchecked() }.asTerm
+        val unchecked = unwrapInlined('{ new scala.unchecked() }.asTerm)
         Unapply(
           Select.unique(tupleXXLCompanion, "unapplySeq"),
           Nil,

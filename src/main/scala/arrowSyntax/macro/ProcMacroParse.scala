@@ -3,6 +3,7 @@ package arrowSyntax.`macro`
 import scala.annotation.tailrec
 import scala.quoted.{Expr, Type}
 
+import arrowSyntax.ArrowSyntax
 import cats.arrow.Arrow
 
 trait ProcMacroParse[F[_, _], A, B](using Type[F]):
@@ -139,7 +140,15 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
 
     case Apply(TypeApply(Select(v, "map"), _), List(Binder(binder, rhs, _))) =>
       (rhs, (CommandStep(makeCommand(v.asExpr), binder) :: acc).reverse)
-    case _ => report.errorAndAbort("Expected for comprehension", term.pos)
+    case _ =>
+      // A bare command (or a flatMap ending in one) is treated as `for r <- command yield r`
+      val command    = makeCommand(term.asExpr)
+      val resultType = term.tpe.widen.baseType(TypeRepr.of[ArrowSyntax].typeSymbol) match
+        case AppliedType(_, List(_, res)) => res
+        case _ => report.errorAndAbort("Expected for comprehension or arrow command", term.pos)
+      val bindSym = Symbol.newBind(Symbol.spliceOwner, "r", Flags.EmptyFlags, resultType)
+      val binder  = PatBinder(Bind(bindSym, Wildcard()), resultType)
+      (Ref(bindSym), (CommandStep(command, binder) :: acc).reverse)
   end collectCommands
 
   def collectCommandPhase(forBody: Term, argBinder: PatBinder): List[CommandPhase] =
