@@ -264,7 +264,7 @@ trait ProcMacroCodegen[F[_, _], A, B](using Type[F], Type[A], Type[B]):
             case Next.Yield(result) =>
               storages.combined.remap(result, combinedSymbols, sym)
 
-          Match(tuple, List(CaseDef(pat, None, body)))
+          Match(uncheckedIfXXL(tuple, pat), List(CaseDef(pat, None, body)))
         case _ => report.errorAndAbort("Lambda tree was not term")
       }
     )

@@ -52,24 +52,24 @@ trait ProcMacroStorage[F[_, _], A, B]:
       case TupleShape.Empty        => Wildcard()
       case TupleShape.Single       => Bind(symbols.head, Wildcard())
       case TupleShape.Small(arity) =>
-        Unapply(
+        typedUnapply(
           TypeApply(
             Select.unique(tupleCompanion(arity), "unapply"),
             entries.map(t => Inferred(t.tpe)).toList
           ),
-          Nil,
-          symbols.map(s => Bind(s, Wildcard())).toList
+          symbols.map(s => Bind(s, Wildcard())).toList,
+          makeType
         )
       case TupleShape.XXL =>
         // TupleXXL elements are untyped, so we need a type test to give the binds their types
         val unchecked = unwrapInlined('{ new scala.unchecked() }.asTerm)
-        Unapply(
+        typedUnapply(
           Select.unique(tupleXXLCompanion, "unapplySeq"),
-          Nil,
           entries
             .zip(symbols)
             .map((t, s) => Bind(s, TypedOrTest(Wildcard(), Inferred(AnnotatedType(t.tpe, unchecked)))))
-            .toList
+            .toList,
+          makeType
         )
 
     def makeTupleTerm(symbols: Symbols): Term = shape match
@@ -95,10 +95,10 @@ trait ProcMacroStorage[F[_, _], A, B]:
     def makePairUnapply(pat: Tree, tpe: TypeRepr, symbols: Symbols): Tree =
       if entries.isEmpty then pat
       else
-        Unapply(
+        typedUnapply(
           TypeApply(Select.unique(tupleCompanion(2), "unapply"), List(Inferred(tpe), Inferred(makeType))),
-          Nil,
-          List(pat, makeUnapply(symbols))
+          List(pat, makeUnapply(symbols)),
+          makePairType(tpe)
         )
 
     def makePairTerm(term: Term, tpe: TypeRepr, symbols: Symbols): Term =

@@ -20,13 +20,13 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
         Some((PatBinder(pat, typeTree.tpe), next, valDef.symbol.owner))
       case UntupledLambda(valDef, params, body) =>
         val bindSyms = params.map(p => Symbol.newBind(Symbol.spliceOwner, p.name, Flags.EmptyFlags, p.tpt.tpe))
-        val pat      = Unapply(
+        val pat      = typedUnapply(
           TypeApply(
             Select.unique(Ref(defn.TupleClass(params.length).companionModule), "unapply"),
             params.map(p => Inferred(p.tpt.tpe))
           ),
-          Nil,
-          bindSyms.map(s => Bind(s, Wildcard()))
+          bindSyms.map(s => Bind(s, Wildcard())),
+          valDef.tpt.tpe
         )
 
         Some(
@@ -275,13 +275,13 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
     val loopIn    = TypeRepr.of[Tuple2].appliedTo(List(env.makeType, feedbackSym.termRef.widen))
     val loopOut   = TypeRepr.of[Tuple2].appliedTo(List(TypeRepr.of[R], feedback.makeType))
     val argBinder = PatBinder(
-      Unapply(
+      typedUnapply(
         TypeApply(
           Select.unique(Ref(defn.TupleClass(2).companionModule), "unapply"),
           List(Inferred(env.makeType), Inferred(feedbackSym.termRef.widen))
         ),
-        Nil,
-        List(env.makeUnapply(env.entrySymbolsAsSymbols), Bind(feedbackSym, Wildcard()))
+        List(env.makeUnapply(env.entrySymbolsAsSymbols), Bind(feedbackSym, Wildcard())),
+        loopIn
       ),
       loopIn
     )
