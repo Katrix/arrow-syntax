@@ -86,10 +86,12 @@ class ProcMacro[F[_, _]: Type, A: Type, B: Type](val arrowTyCl: Expr[Arrow[F]])(
         localRefs(cmd.arrow.asTerm, isProcLocal).map: ref =>
           report.error(
             s"The arrow cannot depend on `${ref.symbol.name}`, which is bound inside the proc. " +
-              "Arrows to the left of -< are built once, before any input exists",
+              "Arrows to the left of -< are built once, before any input exists. " +
+              "Use -<< to apply an arrow computed inside the proc",
             ref.pos
           )
           ref
+      case _: Command.ApplyArrow[_, _] => Nil
       case Command.If(_, left, right) => checkCommand(left) ++ checkCommand(right)
       case Command.Match(_, cases)    => cases.toList.flatMap(cse => checkCommand(cse.thenDo))
 

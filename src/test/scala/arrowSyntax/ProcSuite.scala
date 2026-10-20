@@ -371,3 +371,59 @@ object ProcSuite extends FunSuite:
 
     expect(errors.exists(_.message.contains("Expected -< or -<<"))) &&
     expect(errors.forall(!_.message.contains("Exception occurred")))
+
+  test("-<< can apply an arrow that depends on earlier binders"):
+    val f = arrows.proc[Int]: a =>
+      for
+        b <- inc -< a
+        c <- ((x: Int) => x * b) -<< a
+      yield (b, c)
+
+    expect.eql((4, 12), f(3))
+
+  test("-<< can apply an arrow that depends on the proc input"):
+    val f = arrows.proc[Int]: a =>
+      ((x: Int) => x + a) -<< (a * 10)
+
+    expect.eql(33, f(3))
+
+  test("-<< arrows run in order with the other arrows"):
+    val first  = logged[Int, Int]("first")(inc)
+    val second = (n: Int) => logged[Int, String](s"second $n")(show)
+
+    val f = arrows.proc[Int]: a =>
+      for
+        b <- first -< a
+        c <- second(b) -<< a
+      yield c
+
+    val (log, res) = f.run(1).run
+    expect.eql(List("first", "second 2"), log) && expect.eql("1", res)
+
+  test("-<< inside if/else and match"):
+    val f = arrows.proc[Int]: a =>
+      for
+        even <- isEven -< a
+        r    <- if even then ((x: Int) => x + a) -<< a else double -< a
+        s    <- r match
+          case 0 => show -< r
+          case n => ((x: Int) => s"$n:$x") -<< r
+      yield s
+
+    expect.eql("8:8", f(4)) && expect.eql("0", f(0)) && expect.eql("10:10", f(5))
+
+  test("-<< without ArrowApply is a compile error"):
+    val errors = typeCheckErrors("""
+      val plainShow = Plain(show)
+      arrows.proc[Int]: a =>
+        plainShow -<< a
+    """)
+
+    expect(errors.exists(_.message.contains("ArrowApply")))
+
+  test("if/else branch inputs can contain lambdas"):
+    val f = arrows.proc[Int]: a =>
+      for r <- if a > 0 then double -< List(a).map(x => x + 1).head else double -< a
+      yield r
+
+    expect.eql(8, f(3)) && expect.eql(-6, f(-3))

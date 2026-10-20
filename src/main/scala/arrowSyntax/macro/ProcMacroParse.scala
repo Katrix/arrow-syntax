@@ -90,11 +90,17 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
   enum Command:
     case InvokeArrow[A0, B0](fromType: Type[A0], toType: Type[B0], arrow: Expr[F[A0, B0]], input: Expr[A0])
         extends Command
+    case ApplyArrow[A0, B0](fromType: Type[A0], toType: Type[B0], arrow: Expr[F[A0, B0]], input: Expr[A0])
+        extends Command
     case If(cond: Expr[Boolean], left: Command, right: Command)
     case Match(on: Term, cases: Seq[MatchCase])
 
     lazy val inputType: TypeRepr = this match
       case cmd: InvokeArrow[_, _] => TypeRepr.of(using cmd.fromType)
+      case cmd: ApplyArrow[a0, b0]  =>
+        given Type[a0] = cmd.fromType
+        given Type[b0] = cmd.toType
+        TypeRepr.of[(F[a0, b0], a0)]
       case If(_, left, right)     => eitherType(Seq(left.inputType, right.inputType))
       case Match(_, cases)        => eitherType(cases.map(_.thenDo.inputType))
 
@@ -116,6 +122,10 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
           .asExprOf[F[a, b]],
         value
       )
+
+    case '{ type a; arrowSyntax.-<<[F, a, b]($arrow: F[a, b])($value: a)(using $ev: Arrow[F]) } =>
+      // The arrow is computed inside the proc, so unlike -< it is not hoisted out
+      Command.ApplyArrow(Type.of[a], Type.of[b], arrow, value)
 
     case '{ if $cond then $e1 else $e2 } =>
       Command.If(cond, makeCommand(e1), makeCommand(e2))
@@ -175,6 +185,7 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
 
   private def commandUses(cmd: Command): Set[Symbol] = cmd match
     case cmd: Command.InvokeArrow[_, _] => referencedSymbols(cmd.input.asTerm)
+    case cmd: Command.ApplyArrow[_, _]  => referencedSymbols(cmd.arrow.asTerm) ++ referencedSymbols(cmd.input.asTerm)
     case Command.If(cond, left, right)  => referencedSymbols(cond.asTerm) ++ commandUses(left) ++ commandUses(right)
     case Command.Match(on, cases)       =>
       cases.foldLeft(referencedSymbols(on)): (acc, cse) =>

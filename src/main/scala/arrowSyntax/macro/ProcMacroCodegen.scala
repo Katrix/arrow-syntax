@@ -2,6 +2,7 @@ package arrowSyntax.`macro`
 
 import scala.quoted.{Expr, Quotes, Type}
 
+import arrowSyntax.ArrowApply
 import cats.arrow.ArrowChoice
 
 trait ProcMacroCodegen[F[_, _], A, B](using Type[F], Type[A], Type[B]):
@@ -26,6 +27,7 @@ trait ProcMacroCodegen[F[_, _], A, B](using Type[F], Type[A], Type[B]):
   private lazy val eitherTypeRepr: TypeRepr = TypeRepr.of[Either]
 
   private lazy val arrowChoiceTyCl: Option[Expr[ArrowChoice[F]]] = Expr.summon[ArrowChoice[F]]
+  private lazy val arrowApplyTyCl: Option[Expr[ArrowApply[F]]]   = Expr.summon[ArrowApply[F]]
 
   def eitherType(leaves: Seq[TypeRepr]): TypeRepr = eitherTree(leaves)._2
 
@@ -72,6 +74,14 @@ trait ProcMacroCodegen[F[_, _], A, B](using Type[F], Type[A], Type[B]):
       given Type[to]   = cmd.toType
 
       widenArrowRight(cmd.arrow)[Target].asTerm
+    case cmd: Command.ApplyArrow[from, to] =>
+      given Type[from] = cmd.fromType
+      given Type[to]   = cmd.toType
+
+      val arrowApply = arrowApplyTyCl
+        .getOrElse(report.errorAndAbort(s"ArrowApply[${Type.show[F]}] not found", cmd.arrow.asTerm.pos))
+
+      widenArrowRight('{ $arrowApply.app[from, to] })[Target].asTerm
     case Command.If(cond, left, right) =>
       val arrowChoice = arrowChoiceTyCl
         .getOrElse(report.errorAndAbort(s"ArrowChoice[${Type.show[F]}] not found", cond.asTerm.pos))
@@ -141,18 +151,21 @@ trait ProcMacroCodegen[F[_, _], A, B](using Type[F], Type[A], Type[B]):
     cmd match
       case cmd: Command.InvokeArrow[_, _] =>
         cmdStorage.remap(cmd.input.asTerm, cmdSymbols, ownerSymbol)
+      case cmd: Command.ApplyArrow[_, _] =>
+        val arrow = cmdStorage.remap(cmd.arrow.asTerm, cmdSymbols, ownerSymbol)
+        val input = cmdStorage.remap(cmd.input.asTerm, cmdSymbols, ownerSymbol)
+
+        Select
+          .unique(Ref(defn.TupleClass(2).companionModule), "apply")
+          .appliedToTypes(cmd.inputType.typeArgs)
+          .appliedTo(arrow, input)
       case Command.If(cond, left, right) =>
         val leftInput    = cmdToInput(left, cmdStorage, cmdSymbols, ownerSymbol)
         val rightInput   = cmdToInput(right, cmdStorage, cmdSymbols, ownerSymbol)
-        val remappedCond = cmdStorage.remap(cond.asTerm, cmdSymbols, ownerSymbol).asExprOf[Boolean]
+        val remappedCond = cmdStorage.remap(cond.asTerm, cmdSymbols, ownerSymbol)
+        val (injections, _) = eitherTree(Seq(left.inputType, right.inputType))
 
-        withTypes(left.inputType, right.inputType)([left, right] =>
-          _ =>
-            '{
-              if $remappedCond then Left(${ leftInput.asExprOf[left] })
-              else Right(${ rightInput.asExprOf[right] })
-            }.asTerm
-        )
+        If(remappedCond, injections(0)(leftInput), injections(1)(rightInput))
 
       case Command.Match(on, cases) =>
         val (injections, _) = eitherTree(cases.map(_.thenDo.inputType))
