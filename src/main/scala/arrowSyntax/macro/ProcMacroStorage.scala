@@ -1,6 +1,6 @@
 package arrowSyntax.`macro`
 
-import scala.quoted.{Quotes, Type, Varargs}
+import scala.quoted.{Expr, Quotes, Type, Varargs}
 
 trait ProcMacroStorage[F[_, _], A, B]:
   self: ProcMacro[F, A, B] =>
@@ -35,6 +35,18 @@ trait ProcMacroStorage[F[_, _], A, B]:
 
     def makeSymbols(owner: Symbol): Symbols =
       entries.map(t => Symbol.newBind(owner, Symbol.freshName(t.sym.name), Flags.EmptyFlags, t.tpe))
+
+    /** The symbols of the entries themselves, for trees that are remapped later */
+    def entrySymbolsAsSymbols: Symbols = entries.map(_.sym)
+
+    def makeSelect(tuple: Term, index: Int): Term = shape match
+      case TupleShape.Empty        => report.errorAndAbort("Cannot select from an empty storage")
+      case TupleShape.Single       => tuple
+      case TupleShape.Small(arity) => Select.unique(tuple, s"_${index + 1}")
+      case TupleShape.XXL          =>
+        entries(index).tpe.asType match
+          case '[t] =>
+            '{ ${ tuple.asExprOf[scala.runtime.TupleXXL] }.productElement(${ Expr(index) }).asInstanceOf[t] }.asTerm
 
     def makeUnapply(symbols: Symbols): Tree = shape match
       case TupleShape.Empty        => Wildcard()

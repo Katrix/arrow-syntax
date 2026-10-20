@@ -427,3 +427,90 @@ object ProcSuite extends FunSuite:
       yield r
 
     expect.eql(8, f(3)) && expect.eql(-6, f(-3))
+
+  test("rec can define a value in terms of itself"):
+    val f = arrows.proc[Int]: n =>
+      for ones <- rec {
+          lazy val ones: LazyList[Int] = identity[LazyList[Int]] -<# (n #:: ones)
+          ones
+        }
+      yield ones.take(3).toList
+
+    expect.eql(List(4, 4, 4), f(4))
+
+  test("rec vals can refer to each other and to earlier binders"):
+    val f = arrows.proc[Int]: n =>
+      for
+        a <- inc -< n
+        (evens, odds) <- rec {
+          lazy val evens: LazyList[Int] = identity[LazyList[Int]] -<# (a #:: odds.map(_ + 1))
+          lazy val odds: LazyList[Int]  = identity[LazyList[Int]] -<# evens.map(_ + 1)
+          (evens, odds)
+        }
+        s <- show -< (evens.take(3) ++ odds.take(3)).sum
+      yield s
+
+    expect.eql("27", f(1))
+
+  test("rec can tie the knot for a recursive function"):
+    val f = arrows.proc[Int]: n =>
+      for fact <- rec {
+          lazy val fact: Int => Int = identity[Int => Int] -<# ((k: Int) => if k <= 1 then 1 else k * fact(k - 1))
+          fact
+        }
+      yield fact(n)
+
+    expect.eql(120, f(5))
+
+  test("rec can contain plain vals, if/else and -<<#"):
+    // The result is computed inside the loop, so it must not force the fed back ys yet
+    val f = arrows.proc[Int]: n =>
+      rec:
+        val start                  = n * 10
+        lazy val xs: LazyList[Int] = identity[LazyList[Int]] -<# (start #:: ys)
+        lazy val ys: LazyList[Int] =
+          if n > 0 then ((l: LazyList[Int]) => l.map(_ + n)) -<<# xs else identity[LazyList[Int]] -<# xs
+        xs
+
+    expect.eql(List(20, 22, 24), f(2).take(3).toList) && expect.eql(List(0, 0, 0), f(0).take(3).toList)
+
+  test("-<# outside rec is a compile error"):
+    val errors = typeCheckErrors("""
+      arrows.proc[Int]: a =>
+        for b <- inc -< a
+        yield inc -<# b
+    """)
+
+    expect(errors.exists(_.message.contains("can only be used inside rec")))
+
+  test("rec without ArrowLoop is a compile error"):
+    val errors = typeCheckErrors("""
+      val plainInc = Plain(inc)
+      arrows.proc[Int]: a =>
+        rec:
+          lazy val b: Int = plainInc -<# a
+          b
+    """)
+
+    expect(errors.exists(_.message.contains("ArrowLoop")))
+
+  test("an arrow in rec using a rec val is a compile error"):
+    val errors = typeCheckErrors("""
+      arrows.proc[Int]: a =>
+        rec:
+          lazy val b: Int = ((x: Int) => x + c) -<# a
+          lazy val c: Int = inc -<# b
+          c
+    """)
+
+    expect(errors.exists(_.message.contains("cannot depend on `c`")))
+
+  test("-< inside rec is a compile error"):
+    val errors = typeCheckErrors("""
+      arrows.proc[Int]: a =>
+        rec:
+          val b = inc -< a
+          1
+    """)
+
+    expect(errors.exists(_.message.contains("Use -<# and -<<# inside rec")))

@@ -3,6 +3,7 @@ package arrowSyntax.`macro`
 import scala.quoted.{Expr, Quotes, Type}
 
 import arrowSyntax.ArrowApply
+import cats.Eval
 import cats.arrow.ArrowChoice
 
 trait ProcMacroCodegen[F[_, _], A, B](using Type[F], Type[A], Type[B]):
@@ -21,6 +22,13 @@ trait ProcMacroCodegen[F[_, _], A, B](using Type[F], Type[A], Type[B]):
     (tpe1.asType, tpe2.asType) match
       case ('[t1], '[t2]) => f[t1, t2](())
       case _              => abortOnTypeMatchFailure
+
+  private def withTypes[R](tpe1: TypeRepr, tpe2: TypeRepr, tpe3: TypeRepr)(
+      f: [T1, T2, T3] => Unit => (Type[T1], Type[T2], Type[T3]) ?=> R
+  ): R =
+    (tpe1.asType, tpe2.asType, tpe3.asType) match
+      case ('[t1], '[t2], '[t3]) => f[t1, t2, t3](())
+      case _                     => abortOnTypeMatchFailure
 
   private lazy val leftModule: Symbol       = Symbol.requiredModule("scala.util.Left")
   private lazy val rightModule: Symbol      = Symbol.requiredModule("scala.util.Right")
@@ -49,7 +57,16 @@ trait ProcMacroCodegen[F[_, _], A, B](using Type[F], Type[A], Type[B]):
         )
   end eitherTree
 
-  case class BuildState(arrow: Option[Term], storage: Storage)
+  /** @param procIn The input type of the arrow being built
+    * @param procOut The output type of the arrow being built
+    */
+  case class BuildState(arrow: Option[Term], storage: Storage, procIn: TypeRepr, procOut: TypeRepr)
+
+  def buildArrow(phases: List[CommandPhase], procIn: TypeRepr, procOut: TypeRepr): Term =
+    phases
+      .foldLeft(BuildState(None, new Storage(Nil), procIn, procOut))(commandToTerm)
+      .arrow
+      .getOrElse(report.errorAndAbort("Proc did not produce an arrow"))
 
   private class StepStorages(val old: Storage, prev: PatBinder, keep: Set[Symbol]):
     val prevBinder: Storage                                          = Storage.fromPat(prev)
@@ -116,6 +133,16 @@ trait ProcMacroCodegen[F[_, _], A, B](using Type[F], Type[A], Type[B]):
           )
 
       arrow
+
+    case cmd: Command.Rec[r] =>
+      given Type[r] = cmd.resultType
+      val inner     = buildArrow(cmd.phases, cmd.loopIn, cmd.loopOut)
+
+      withTypes(cmd.env.makeType, cmd.feedback.makeType)([env, fb] =>
+        _ =>
+          val looped = '{ ${ cmd.loop }.loop[env, r, fb](${ inner.asExprOf[F[(env, Eval[fb]), (r, fb)]] }) }
+          widenArrowRight(looped)[Target].asTerm
+      )
   end handleCommand
 
   private def executeCmd[Target: Type](state: BuildState, cmd: Command): BuildState =
@@ -132,13 +159,13 @@ trait ProcMacroCodegen[F[_, _], A, B](using Type[F], Type[A], Type[B]):
             val inType  = state.storage.makePairType(TypeRepr.of[from])
             val outType = state.storage.makePairType(TypeRepr.of[Target])
 
-            withTypes(inType, outType)([in, out] =>
+            withTypes(state.procIn, inType, outType)([procIn, in, out] =>
               _ =>
-                '{ ${ prevArrow.asExprOf[F[A, in]] }.andThen(${ arrow.asExprOf[F[in, out]] })(using $arrowTyCl) }.asTerm
+                '{ ${ prevArrow.asExprOf[F[procIn, in]] }.andThen(${ arrow.asExprOf[F[in, out]] })(using $arrowTyCl) }.asTerm
             )
           case None => arrow
 
-        BuildState(Some(newArrow), state.storage)
+        state.copy(arrow = Some(newArrow))
     )
   end executeCmd
 
@@ -185,19 +212,23 @@ trait ProcMacroCodegen[F[_, _], A, B](using Type[F], Type[A], Type[B]):
             CaseDef(pat, guard, injection(body))
 
         Match(cmdStorage.remap(on, cmdSymbols, ownerSymbol), caseDefs.toList)
+
+      case cmd: Command.Rec[_] =>
+        cmdStorage.remap(cmd.env.makeTupleTerm(cmd.env.entrySymbolsAsSymbols), cmdSymbols, ownerSymbol)
   end cmdToInput
 
-  private def isIdentityStep(prev: PatBinder, next: Next, storages: StepStorages): Boolean = prev.pat match
-    case b @ Bind(_, Wildcard()) =>
-      def isBinder(t: Term): Boolean = unwrapInlined(t) match
-        case i @ Ident(_) => i.symbol == b.symbol
-        case _            => false
+  private def isIdentityStep(prev: PatBinder, next: Next, storages: StepStorages, procOut: TypeRepr): Boolean =
+    prev.pat match
+      case b @ Bind(_, Wildcard()) =>
+        def isBinder(t: Term): Boolean = unwrapInlined(t) match
+          case i @ Ident(_) => i.symbol == b.symbol
+          case _            => false
 
-      storages.old.entrySymbols == storages.kept.entrySymbols && (next match
-        case Next.Cmd(cmd: Command.InvokeArrow[_, _]) => isBinder(cmd.input.asTerm) && prev.tpe =:= cmd.inputType
-        case Next.Cmd(_)                              => false
-        case Next.Yield(result)                       => isBinder(result) && prev.tpe =:= TypeRepr.of[B])
-    case _ => false
+        storages.old.entrySymbols == storages.kept.entrySymbols && (next match
+          case Next.Cmd(cmd: Command.InvokeArrow[_, _]) => isBinder(cmd.input.asTerm) && prev.tpe =:= cmd.inputType
+          case Next.Cmd(_)                              => false
+          case Next.Yield(result)                       => isBinder(result) && prev.tpe =:= procOut)
+      case _ => false
 
   private def stepFunction(
       prev: PatBinder,
@@ -242,24 +273,24 @@ trait ProcMacroCodegen[F[_, _], A, B](using Type[F], Type[A], Type[B]):
   private def prepareCommand(state: BuildState, prev: PatBinder, next: Next, keep: Set[Symbol]): BuildState =
     val storages = new StepStorages(state.storage, prev, keep)
 
-    if isIdentityStep(prev, next, storages) then BuildState(state.arrow, storages.kept)
+    if isIdentityStep(prev, next, storages, state.procOut) then state.copy(storage = storages.kept)
     else
       val inType  = storages.old.makePairType(prev.tpe)
       val outType = next match
         case Next.Cmd(cmd) => storages.kept.makePairType(cmd.inputType)
-        case Next.Yield(_) => TypeRepr.of[B]
+        case Next.Yield(_) => state.procOut
 
       val lam = stepFunction(prev, next, storages, inType, outType)
 
-      val arrow = withTypes(inType, outType)([in, out] =>
+      val arrow = withTypes(state.procIn, inType, outType)([procIn, in, out] =>
         _ =>
           val f = lam.asExprOf[in => out]
           state.arrow match
-            case Some(prevArrow) => '{ ${ prevArrow.asExprOf[F[A, in]] }.rmap[out]($f)(using $arrowTyCl) }.asTerm
+            case Some(prevArrow) => '{ ${ prevArrow.asExprOf[F[procIn, in]] }.rmap[out]($f)(using $arrowTyCl) }.asTerm
             case None            => '{ $arrowTyCl.lift[in, out]($f) }.asTerm
       )
 
-      BuildState(Some(arrow), storages.kept)
+      BuildState(Some(arrow), storages.kept, state.procIn, state.procOut)
   end prepareCommand
 
   def commandToTerm(state: BuildState, cmdPhase: CommandPhase): BuildState = cmdPhase match

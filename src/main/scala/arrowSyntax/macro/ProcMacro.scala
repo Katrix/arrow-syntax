@@ -32,8 +32,7 @@ class ProcMacro[F[_, _]: Type, A: Type, B: Type](val arrowTyCl: Expr[Arrow[F]])(
     val commandPhases = collectCommandPhase(forBody, argBinder)
     checkLiftable(argBinder, preamble, commandPhases, lambdaOwner)
 
-    val finalState = commandPhases.foldLeft(BuildState(None, new Storage(Nil)))(commandToTerm)
-    val arrowTerm  = finalState.arrow.getOrElse(report.errorAndAbort("Proc did not produce an arrow"))
+    val arrowTerm = buildArrow(commandPhases, TypeRepr.of[A], TypeRepr.of[B])
 
     val res =
       if preamble.isEmpty then arrowTerm.asExprOf[F[A, B]]
@@ -56,8 +55,22 @@ class ProcMacro[F[_, _]: Type, A: Type, B: Type](val arrowTyCl: Expr[Arrow[F]])(
   ): Unit =
     val preambleSyms = preamble.collect { case d: Definition => d.symbol }.toSet
     val argSyms      = Binder.collectSymbolsAndTypes(argBinder).map(_._1).toSet
+
+    // Includes the phases of rec blocks
+    def allPhases(phases: List[CommandPhase]): List[CommandPhase] = phases.flatMap:
+      case phase @ CommandPhase.Execute(cmd, _) => phase :: nestedPhases(cmd)
+      case phase                                => List(phase)
+
+    def nestedPhases(cmd: Command): List[CommandPhase] = cmd match
+      case cmd: Command.Rec[_]        => allPhases(cmd.phases)
+      case Command.If(_, left, right) => nestedPhases(left) ++ nestedPhases(right)
+      case Command.Match(_, cases)    => cases.toList.flatMap(cse => nestedPhases(cse.thenDo))
+      case _                          => Nil
+
+    val phases = allPhases(commandPhases)
+
     // Binders created by the macro are owned by the splice owner, so they won't be found by checking ownership
-    val binderSyms = commandPhases
+    val binderSyms = phases
       .flatMap:
         case CommandPhase.Prepare(prev, _, _) => Binder.collectSymbolsAndTypes(prev).map(_._1)
         case _                                => Nil
@@ -92,10 +105,11 @@ class ProcMacro[F[_, _]: Type, A: Type, B: Type](val arrowTyCl: Expr[Arrow[F]])(
           )
           ref
       case _: Command.ApplyArrow[_, _] => Nil
+      case _: Command.Rec[_]           => Nil // Checked through allPhases
       case Command.If(_, left, right) => checkCommand(left) ++ checkCommand(right)
       case Command.Match(_, cases)    => cases.toList.flatMap(cse => checkCommand(cse.thenDo))
 
-    val commandErrors = commandPhases.flatMap:
+    val commandErrors = phases.flatMap:
       case CommandPhase.Execute(cmd, _) => checkCommand(cmd)
       case _                            => Nil
 
