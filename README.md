@@ -3,7 +3,7 @@
 In Haskell, arrow notation is a way to write programs using arrows in an easier way. arrow-notation ports that functionality to Scala.
 
 ```scala
-libraryDependencies += "net.katsstuff" %% "arrow-syntax" % "TODO"
+libraryDependencies += "net.katsstuff" %% "arrow-syntax" % "0.1.0"
 ```
 
 ## Usage

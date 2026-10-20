@@ -5,7 +5,7 @@ organization  := "net.katsstuff"
 licenses      := Seq("MIT" -> uri("http://opensource.org/licenses/MIT"))
 developers    := List(Developer("Katrix", "Kathryn Frid", "katrix97@hotmail.com", uri("http://katsstuff.net/")))
 versionScheme := Some("early-semver")
-version       := "0.1.0-SNAPSHOT"
+version       := "0.1.0"
 
 lazy val publishSettings = Seq(
   Test / publishArtifact := false,
