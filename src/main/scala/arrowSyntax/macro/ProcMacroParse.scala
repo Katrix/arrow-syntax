@@ -188,7 +188,7 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
         case _ if inRec =>
           report.errorAndAbort("Expected -<# or -<<# as the right hand side of a val in rec", expr.asTerm.pos)
         case _ =>
-          println(indentStructure(other.asTerm.show))
+          // println(indentStructure(other.asTerm.show))
           report.errorAndAbort("Expected -< or -<< as flatMap/map recipient", expr.asTerm.pos)
   end makeCommand
 

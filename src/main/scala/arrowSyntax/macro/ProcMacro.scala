@@ -38,7 +38,7 @@ class ProcMacro[F[_, _]: Type, A: Type, B: Type](val arrowTyCl: Expr[Arrow[F]])(
       if preamble.isEmpty then arrowTerm.asExprOf[F[A, B]]
       else Block(preamble, arrowTerm.changeOwner(lambdaOwner)).changeOwner(Symbol.spliceOwner).asExprOf[F[A, B]]
 
-    println(res.asTerm.show(using Printer.TreeShortCode))
+    // println(res.asTerm.show(using Printer.TreeShortCode))
 
     res
 
