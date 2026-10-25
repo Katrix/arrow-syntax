@@ -151,15 +151,6 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
     *   and -<<
     */
   private def makeCommand(expr: Expr[Any], inRec: Boolean = false): Command = expr match
-    case '{ type a; arrowSyntax.-<[F, a, b]($arrow: F[a, b])($value: a)(using $ev: Arrow[F]) } if !inRec =>
-      Command.InvokeArrow(
-        Type.of[a],
-        Type.of[b],
-        arrow.asTerm
-          .changeOwner(Symbol.spliceOwner)
-          .asExprOf[F[a, b]],
-        value
-      )
     case '{ type a; arrowSyntax.-<[F, a, b](if $cond then $e1 else $e2)($value: a)(using $ev: Arrow[F]) } if !inRec =>
       Command.If(
         cond,
@@ -178,11 +169,6 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
           value
         )
       )
-
-    case '{ type a; arrowSyntax.-<<[F, a, b]($arrow: F[a, b])($value: a)(using $ev: Arrow[F]) } if !inRec =>
-      // The arrow is computed inside the proc, so unlike -< it is not hoisted out
-      Command.ApplyArrow(Type.of[a], Type.of[b], arrow, value)
-
     case '{ type a; arrowSyntax.-<<[F, a, b](if $cond then $e1 else $e2)($value: a)(using $ev: Arrow[F]) } if !inRec =>
       Command.If(
         cond,
@@ -201,6 +187,18 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
           value
         )
       )
+    case '{ type a; arrowSyntax.-<[F, a, b]($arrow: F[a, b])($value: a)(using $ev: Arrow[F]) } if !inRec =>
+      Command.InvokeArrow(
+        Type.of[a],
+        Type.of[b],
+        arrow.asTerm
+          .changeOwner(Symbol.spliceOwner)
+          .asExprOf[F[a, b]],
+        value
+      )
+    case '{ type a; arrowSyntax.-<<[F, a, b]($arrow: F[a, b])($value: a)(using $ev: Arrow[F]) } if !inRec =>
+      // The arrow is computed inside the proc, so unlike -< it is not hoisted out
+      Command.ApplyArrow(Type.of[a], Type.of[b], arrow, value)
 
     case '{ type a; arrowSyntax.-<#[F, a, b]($arrow: F[a, b])($value: a)(using $scope: RecScope[F]) } if inRec =>
       Command.InvokeArrow(

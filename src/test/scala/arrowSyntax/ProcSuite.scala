@@ -519,8 +519,16 @@ object ProcSuite extends FunSuite:
     val f = arrows.proc[Int]: a =>
       for
         even <- isEven -< a
-        r <- (if even then show else show) -<< a
+        r    <- (if even then inc else double) -< a
       yield r
 
-    expect.eql("2", f(2)) && expect.eql("1", f(1))
+    expect.eql(3, f(2)) && expect.eql(10, f(5))
 
+  test("-<< can accept an if else as a parameter"):
+    val f = arrows.proc[Int]: a =>
+      for
+        even <- isEven -< a
+        r <- (if even then inc else double) -<< a
+      yield r
+
+    expect.eql(3, f(2)) && expect.eql(10, f(5))
