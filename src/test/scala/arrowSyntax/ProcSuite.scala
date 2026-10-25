@@ -441,7 +441,7 @@ object ProcSuite extends FunSuite:
   test("rec vals can refer to each other and to earlier binders"):
     val f = arrows.proc[Int]: n =>
       for
-        a <- inc -< n
+        a             <- inc -< n
         (evens, odds) <- rec {
           lazy val evens: LazyList[Int] = identity[LazyList[Int]] -<# (a #:: odds.map(_ + 1))
           lazy val odds: LazyList[Int]  = identity[LazyList[Int]] -<# evens.map(_ + 1)

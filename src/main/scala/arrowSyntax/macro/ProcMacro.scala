@@ -18,22 +18,24 @@ class ProcMacro[F[_, _]: Type, A: Type, B: Type](val arrowTyCl: Expr[Arrow[F]])(
     case Inlined(_, _, t) => unwrapInlined(t)
     case r                => r
 
-  /** Unapply.apply gives the pattern the type Nothing, which makes the exhaustivity checker warn. Copying from a type
-    * tree instead gives it the scrutinee type
+  /**
+    * Unapply.apply gives the pattern the type Nothing, which makes the
+    * exhaustivity checker warn. Copying from a type tree instead gives it the
+    * scrutinee type
     */
   final def typedUnapply(fun: Term, patterns: List[Tree], tpe: TypeRepr): Unapply =
     Unapply.copy(Inferred(tpe))(fun, Nil, patterns)
 
-  /** TupleXXL patterns use unapplySeq, which the exhaustivity checker can never prove total, so matches containing
-    * them get an @unchecked scrutinee
+  /**
+    * TupleXXL patterns use unapplySeq, which the exhaustivity checker can never
+    * prove total, so matches containing them get an @unchecked scrutinee
     */
   final def uncheckedIfXXL(scrutinee: Term, pat: Tree): Term =
     val tupleXXLModule = Symbol.requiredModule("scala.runtime.TupleXXL").moduleClass
     val containsXXL    = new TreeAccumulator[Boolean]:
       def foldTree(acc: Boolean, tree: Tree)(owner: Symbol): Boolean = acc || (tree match
         case Unapply(fun, _, _) if fun.symbol.owner == tupleXXLModule => true
-        case _                                                        => foldOverTree(acc, tree)(owner)
-      )
+        case _                                                        => foldOverTree(acc, tree)(owner))
     .foldTree(false, pat)(Symbol.spliceOwner)
 
     if containsXXL then
@@ -129,8 +131,8 @@ class ProcMacro[F[_, _]: Type, A: Type, B: Type](val arrowTyCl: Expr[Arrow[F]])(
           ref
       case _: Command.ApplyArrow[_, _] => Nil
       case _: Command.Rec[_]           => Nil // Checked through allPhases
-      case Command.If(_, left, right) => checkCommand(left) ++ checkCommand(right)
-      case Command.Match(_, cases)    => cases.toList.flatMap(cse => checkCommand(cse.thenDo))
+      case Command.If(_, left, right)  => checkCommand(left) ++ checkCommand(right)
+      case Command.Match(_, cases)     => cases.toList.flatMap(cse => checkCommand(cse.thenDo))
 
     val commandErrors = phases.flatMap:
       case CommandPhase.Execute(cmd, _) => checkCommand(cmd)

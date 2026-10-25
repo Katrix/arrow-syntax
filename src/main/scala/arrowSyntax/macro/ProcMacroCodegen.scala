@@ -57,8 +57,11 @@ trait ProcMacroCodegen[F[_, _], A, B](using Type[F], Type[A], Type[B]):
         )
   end eitherTree
 
-  /** @param procIn The input type of the arrow being built
-    * @param procOut The output type of the arrow being built
+  /**
+    * @param procIn
+    *   The input type of the arrow being built
+    * @param procOut
+    *   The output type of the arrow being built
     */
   case class BuildState(arrow: Option[Term], storage: Storage, procIn: TypeRepr, procOut: TypeRepr)
 
@@ -161,7 +164,9 @@ trait ProcMacroCodegen[F[_, _], A, B](using Type[F], Type[A], Type[B]):
 
             withTypes(state.procIn, inType, outType)([procIn, in, out] =>
               _ =>
-                '{ ${ prevArrow.asExprOf[F[procIn, in]] }.andThen(${ arrow.asExprOf[F[in, out]] })(using $arrowTyCl) }.asTerm
+                '{
+                  ${ prevArrow.asExprOf[F[procIn, in]] }.andThen(${ arrow.asExprOf[F[in, out]] })(using $arrowTyCl)
+                }.asTerm
             )
           case None => arrow
 
@@ -187,9 +192,9 @@ trait ProcMacroCodegen[F[_, _], A, B](using Type[F], Type[A], Type[B]):
           .appliedToTypes(cmd.inputType.typeArgs)
           .appliedTo(arrow, input)
       case Command.If(cond, left, right) =>
-        val leftInput    = cmdToInput(left, cmdStorage, cmdSymbols, ownerSymbol)
-        val rightInput   = cmdToInput(right, cmdStorage, cmdSymbols, ownerSymbol)
-        val remappedCond = cmdStorage.remap(cond.asTerm, cmdSymbols, ownerSymbol)
+        val leftInput       = cmdToInput(left, cmdStorage, cmdSymbols, ownerSymbol)
+        val rightInput      = cmdToInput(right, cmdStorage, cmdSymbols, ownerSymbol)
+        val remappedCond    = cmdStorage.remap(cond.asTerm, cmdSymbols, ownerSymbol)
         val (injections, _) = eitherTree(Seq(left.inputType, right.inputType))
 
         If(remappedCond, injections(0)(leftInput), injections(1)(rightInput))
