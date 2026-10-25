@@ -167,7 +167,6 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
           Type.of[a],
           Type.of[b],
           e1.asTerm
-            .changeOwner(Symbol.spliceOwner)
             .asExprOf[F[a, b]],
           value
         ),
@@ -175,7 +174,6 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
           Type.of[a],
           Type.of[b],
           e2.asTerm
-            .changeOwner(Symbol.spliceOwner)
             .asExprOf[F[a, b]],
           value
         )
@@ -192,7 +190,6 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
           Type.of[a],
           Type.of[b],
           e1.asTerm
-            .changeOwner(Symbol.spliceOwner)
             .asExprOf[F[a, b]],
           value
         ),
@@ -200,11 +197,10 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
           Type.of[a],
           Type.of[b],
           e2.asTerm
-            .changeOwner(Symbol.spliceOwner)
             .asExprOf[F[a, b]],
           value
         )
-      )  
+      )
 
     case '{ type a; arrowSyntax.-<#[F, a, b]($arrow: F[a, b])($value: a)(using $scope: RecScope[F]) } if inRec =>
       Command.InvokeArrow(

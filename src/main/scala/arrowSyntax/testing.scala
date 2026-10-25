@@ -26,7 +26,8 @@ val test1 = arrows.proc[Int]: a =>
     r2       <- b match
       case true  => arr3 -< l
       case false => arr4 -< a
-    r3 <- (if b then arr3 else arr5) -<< l
+//    r3 <- (if b then arr3 else arr5) -<< l //cant pipe b in
+    r3 <- (if true then arr3 else arr5) -< l // this works
   yield (r1, r2, r3)
 
 /*
