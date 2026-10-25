@@ -514,3 +514,13 @@ object ProcSuite extends FunSuite:
     """)
 
     expect(errors.exists(_.message.contains("Use -<# and -<<# inside rec")))
+
+  test("-< can accept an if else as a parameter"):
+    val f = arrows.proc[Int]: a =>
+      for
+        even <- isEven -< a
+        r <- (if even then show else show) -<< a
+      yield r
+
+    expect.eql("2", f(2)) && expect.eql("1", f(1))
+
