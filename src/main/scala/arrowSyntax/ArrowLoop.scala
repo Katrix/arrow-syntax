@@ -3,7 +3,10 @@ package arrowSyntax
 import cats.Eval
 import cats.arrow.Arrow
 
-/** Typeclass allowing for creation of recursive arrows. Used for `rec` in arrow notation. */
+/**
+  * Typeclass allowing for creation of recursive arrows. Used for `rec` in arrow
+  * notation.
+  */
 trait ArrowLoop[F[_, _]] extends Arrow[F]:
   /**
     * Feeds the second output of `f` back in as its second input. The fed back

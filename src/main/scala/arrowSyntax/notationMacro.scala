@@ -12,5 +12,5 @@ def procImpl[F[_, _]: {Type}, A: Type, B: Type](syntax: Expr[A => ArrowSyntax[F,
   import q.reflect.*
 
   new ProcMacro[F, A, B](arrowTyCl).run(syntax)
-  
+
 end procImpl

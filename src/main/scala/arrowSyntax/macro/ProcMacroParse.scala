@@ -111,16 +111,19 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
     ) extends Command
 
     lazy val inputType: TypeRepr = this match
-      case cmd: InvokeArrow[_, _] => TypeRepr.of(using cmd.fromType)
-      case cmd: ApplyArrow[a0, b0]  =>
+      case cmd: InvokeArrow[_, _]  => TypeRepr.of(using cmd.fromType)
+      case cmd: ApplyArrow[a0, b0] =>
         given Type[a0] = cmd.fromType
         given Type[b0] = cmd.toType
         TypeRepr.of[(F[a0, b0], a0)]
-      case If(_, left, right)     => eitherType(Seq(left.inputType, right.inputType))
-      case Match(_, cases)        => eitherType(cases.map(_.thenDo.inputType))
-      case cmd: Rec[_]            => cmd.env.makeType
+      case If(_, left, right) => eitherType(Seq(left.inputType, right.inputType))
+      case Match(_, cases)    => eitherType(cases.map(_.thenDo.inputType))
+      case cmd: Rec[_]        => cmd.env.makeType
 
-    /** Maps the terms evaluated inside the proc, which excludes arrows to the left of -< */
+    /**
+      * Maps the terms evaluated inside the proc, which excludes arrows to the
+      * left of -<
+      */
     def mapInputs(f: Term => Term): Command = this match
       case cmd: InvokeArrow[a, b] =>
         given Type[a] = cmd.fromType
@@ -142,8 +145,48 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
     case Prepare(prev: PatBinder, next: Next, keep: Set[Symbol])
     case Execute(command: Command, targetType: TypeRepr)
 
-  /** @param inRec If we are inside a rec block, where -<# and -<<# are used instead of -< and -<< */
+  /**
+    * @param inRec
+    *   If we are inside a rec block, where -<# and -<<# are used instead of -<
+    *   and -<<
+    */
   private def makeCommand(expr: Expr[Any], inRec: Boolean = false): Command = expr match
+    case '{ type a; arrowSyntax.-<[F, a, b](if $cond then $e1 else $e2)($value: a)(using $ev: Arrow[F]) } if !inRec =>
+      Command.If(
+        cond,
+        Command.InvokeArrow(
+          Type.of[a],
+          Type.of[b],
+          e1.asTerm
+            .asExprOf[F[a, b]],
+          value
+        ),
+        Command.InvokeArrow(
+          Type.of[a],
+          Type.of[b],
+          e2.asTerm
+            .asExprOf[F[a, b]],
+          value
+        )
+      )
+    case '{ type a; arrowSyntax.-<<[F, a, b](if $cond then $e1 else $e2)($value: a)(using $ev: Arrow[F]) } if !inRec =>
+      Command.If(
+        cond,
+        Command.InvokeArrow(
+          Type.of[a],
+          Type.of[b],
+          e1.asTerm
+            .asExprOf[F[a, b]],
+          value
+        ),
+        Command.InvokeArrow(
+          Type.of[a],
+          Type.of[b],
+          e2.asTerm
+            .asExprOf[F[a, b]],
+          value
+        )
+      )
     case '{ type a; arrowSyntax.-<[F, a, b]($arrow: F[a, b])($value: a)(using $ev: Arrow[F]) } if !inRec =>
       Command.InvokeArrow(
         Type.of[a],
@@ -153,7 +196,6 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
           .asExprOf[F[a, b]],
         value
       )
-
     case '{ type a; arrowSyntax.-<<[F, a, b]($arrow: F[a, b])($value: a)(using $ev: Arrow[F]) } if !inRec =>
       // The arrow is computed inside the proc, so unlike -< it is not hoisted out
       Command.ApplyArrow(Type.of[a], Type.of[b], arrow, value)
@@ -176,7 +218,6 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
 
     case '{ if $cond then $e1 else $e2 } =>
       Command.If(cond, makeCommand(e1, inRec), makeCommand(e2, inRec))
-
     case other =>
       other.asTerm match
         case Match(on, cases) =>
@@ -198,8 +239,7 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
         case _: Ident | _: Select
             if names.contains(tree.symbol.name) && tree.symbol.maybeOwner.fullName.startsWith("arrowSyntax") =>
           true
-        case _ => foldOverTree(acc, tree)(owner)
-      )
+        case _ => foldOverTree(acc, tree)(owner))
     .foldTree(false, tree)(Symbol.spliceOwner)
 
   private def boundSymbols(tree: Tree): Set[Symbol] =
@@ -236,11 +276,11 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
       .flatMap((rhs, i) => referencedSymbols(rhs).toList.flatMap(index.get).filter(_ >= i))
       .distinct
       .sorted
-    val feedback     = new Storage(feedbackIdxs.map(i => (sym = binds(i), tpe = valDefs(i).tpt.tpe)))
-    val feedbackSym  =
+    val feedback    = new Storage(feedbackIdxs.map(i => (sym = binds(i), tpe = valDefs(i).tpt.tpe)))
+    val feedbackSym =
       Symbol.newBind(Symbol.spliceOwner, "feedback", Flags.EmptyFlags, TypeRepr.of[Eval].appliedTo(feedback.makeType))
 
-    val recBindSet                = binds.zipWithIndex.toMap
+    val recBindSet                                   = binds.zipWithIndex.toMap
     def readFeedback(defined: Int)(term: Term): Term =
       new TreeMap:
         override def transformTerm(tree: Term)(owner: Symbol): Term = tree match
@@ -252,19 +292,22 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
           case _ => super.transformTerm(tree)(owner)
       .transformTerm(term)(Symbol.spliceOwner)
 
-    val steps = valDefs.zip(rhss).zipWithIndex.map:
-      case ((valDef, rhs), i) =>
-        val replaced = replaceVals(rhs, valDef.symbol)
-        val command  =
-          if containsSyntax(replaced, Set("-<#", "-<<#")) then makeCommand(replaced.asExpr, inRec = true)
-          else if containsSyntax(replaced, Set("-<", "-<<", "rec")) then
-            report.errorAndAbort("Use -<# and -<<# inside rec, not -< and -<<", rhs.pos)
-          else
-            // Plain vals are passed through the identity arrow
-            valDef.tpt.tpe.asType match
-              case '[t] => Command.InvokeArrow(Type.of[t], Type.of[t], '{ $arrowTyCl.id[t] }, replaced.asExprOf[t])
+    val steps = valDefs
+      .zip(rhss)
+      .zipWithIndex
+      .map:
+        case ((valDef, rhs), i) =>
+          val replaced = replaceVals(rhs, valDef.symbol)
+          val command  =
+            if containsSyntax(replaced, Set("-<#", "-<<#")) then makeCommand(replaced.asExpr, inRec = true)
+            else if containsSyntax(replaced, Set("-<", "-<<", "rec")) then
+              report.errorAndAbort("Use -<# and -<<# inside rec, not -< and -<<", rhs.pos)
+            else
+              // Plain vals are passed through the identity arrow
+              valDef.tpt.tpe.asType match
+                case '[t] => Command.InvokeArrow(Type.of[t], Type.of[t], '{ $arrowTyCl.id[t] }, replaced.asExprOf[t])
 
-        CommandStep(command.mapInputs(readFeedback(i)), PatBinder(Bind(binds(i), Wildcard()), valDef.tpt.tpe))
+          CommandStep(command.mapInputs(readFeedback(i)), PatBinder(Bind(binds(i), Wildcard()), valDef.tpt.tpe))
 
     // The environment is everything bound outside the rec block that it uses
     val recTrees = rhss :+ result
@@ -316,8 +359,8 @@ trait ProcMacroParse[F[_, _], A, B](using Type[F]):
     phasesFor(argBinder, commands, lastMap)
 
   private def phasesFor(argBinder: PatBinder, commands: List[CommandStep], lastMap: Term): List[CommandPhase] =
-    val usedFrom            = commands.map(c => commandUses(c.command)).scanRight(referencedSymbols(lastMap))(_ ++ _)
-    val binders             = argBinder :: commands.map(_.binder)
+    val usedFrom = commands.map(c => commandUses(c.command)).scanRight(referencedSymbols(lastMap))(_ ++ _)
+    val binders  = argBinder :: commands.map(_.binder)
 
     commands
       .lazyZip(binders)

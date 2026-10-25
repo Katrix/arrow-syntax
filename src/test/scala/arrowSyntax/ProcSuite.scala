@@ -441,7 +441,7 @@ object ProcSuite extends FunSuite:
   test("rec vals can refer to each other and to earlier binders"):
     val f = arrows.proc[Int]: n =>
       for
-        a <- inc -< n
+        a             <- inc -< n
         (evens, odds) <- rec {
           lazy val evens: LazyList[Int] = identity[LazyList[Int]] -<# (a #:: odds.map(_ + 1))
           lazy val odds: LazyList[Int]  = identity[LazyList[Int]] -<# evens.map(_ + 1)
@@ -514,3 +514,21 @@ object ProcSuite extends FunSuite:
     """)
 
     expect(errors.exists(_.message.contains("Use -<# and -<<# inside rec")))
+
+  test("-< can accept an if else as a parameter"):
+    val f = arrows.proc[Int]: a =>
+      for
+        even <- isEven -< a
+        r    <- (if even then inc else double) -< a
+      yield r
+
+    expect.eql(3, f(2)) && expect.eql(10, f(5))
+
+  test("-<< can accept an if else as a parameter"):
+    val f = arrows.proc[Int]: a =>
+      for
+        even <- isEven -< a
+        r <- (if even then inc else double) -<< a
+      yield r
+
+    expect.eql(3, f(2)) && expect.eql(10, f(5))
